@@ -1,47 +1,77 @@
 <?php
+
+declare(strict_types=1);
+
 session_start();
+require __DIR__ . '/connection/db.php';
 
 $message = "";
 $statusType = "";
+$activeTab = 'login';
 
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+    $activeTab = $action === 'signup' ? 'signup' : 'login';
 
-    
-    if ($action === 'signup') {
+    if (!hash_equals($_SESSION['csrf_token'], (string) ($_POST['csrf_token'] ?? ''))) {
+        $message = 'Your session expired. Please refresh the page and try again.';
+        $statusType = 'error';
+    } elseif ($action === 'signup') {
         $username = trim($_POST["reg_username"] ?? '');
-        $email    = trim($_POST["reg_email"] ?? '');
-        $password = trim($_POST["reg_password"] ?? '');
+        $email = strtolower(trim($_POST["reg_email"] ?? ''));
+        $password = $_POST["reg_password"] ?? '';
 
-        if (empty($username) || empty($email) || empty($password)) {
-            $message = "Please complete all fields to sign up!";
+        if (!preg_match('/^[A-Za-z0-9_]{3,30}$/', $username)) {
+            $message = 'Username must be 3-30 characters and contain only letters, numbers, or underscores.';
             $statusType = "error";
-        } elseif (isset($_SESSION['registered_users'][$username])) {
-            $message = "Username already exists! Please choose another.";
-            $statusType = "warning";
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $message = 'Please enter a valid email address.';
+            $statusType = 'error';
+        } elseif (strlen($password) < 8 || strlen($password) > 72) {
+            $message = 'Password must be between 8 and 72 characters.';
+            $statusType = 'error';
         } else {
-            $_SESSION['registered_users'][$username] = password_hash($password, PASSWORD_BCRYPT);
-            $message = "Account created successfully! You can now log in.";
-            $statusType = "success";
+            $statement = $pdo->prepare('SELECT id FROM users WHERE username = :username OR email = :email LIMIT 1');
+            $statement->execute(['username' => $username, 'email' => $email]);
+
+            if ($statement->fetch()) {
+                $message = 'That username or email is already registered.';
+                $statusType = 'warning';
+            } else {
+                $statement = $pdo->prepare('INSERT INTO users (username, email, password_hash) VALUES (:username, :email, :password_hash)');
+                $statement->execute([
+                    'username' => $username,
+                    'email' => $email,
+                    'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+                ]);
+                $message = 'Account created successfully! You can now log in.';
+                $statusType = 'success';
+                $activeTab = 'login';
+            }
         }
-    }
-
-    if ($action === 'login') {
+    } elseif ($action === 'login') {
         $username = trim($_POST["login_username"] ?? '');
-        $password = trim($_POST["login_password"] ?? '');
+        $password = $_POST["login_password"] ?? '';
 
-        if (empty($username) || empty($password)) {
-            $message = "Username and Password are required!";
+        if ($username === '' || $password === '') {
+            $message = 'Username and password are required.';
             $statusType = "error";
         } else {
-            $users = $_SESSION['registered_users'];
-            if (isset($users[$username]) && password_verify($password, $users[$username])) {
-                $_SESSION['logged_in_user'] = $username;
-                $message = "Welcome back, " . htmlspecialchars($username) . "!";
+            $statement = $pdo->prepare('SELECT username, password_hash FROM users WHERE username = :username LIMIT 1');
+            $statement->execute(['username' => $username]);
+            $user = $statement->fetch();
+
+            if ($user && password_verify($password, $user['password_hash'])) {
+                session_regenerate_id(true);
+                $_SESSION['logged_in_user'] = $user['username'];
+                $message = 'Welcome back, ' . $user['username'] . '!';
                 $statusType = "success";
             } else {
-                $message = "Invalid username or password!";
+                $message = "Invalid username or password.";
                 $statusType = "error";
             }
         }
@@ -74,6 +104,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     
     <form method="POST" id="loginForm" class="auth-form active">
         <input type="hidden" name="action" value="login">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8') ?>">
         
         <div class="form-group">
             <label for="login_username">Username</label>
@@ -91,6 +122,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     
     <form method="POST" id="signupForm" class="auth-form">
         <input type="hidden" name="action" value="signup">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8') ?>">
         
         <div class="form-group">
             <label for="reg_username">Username</label>
@@ -165,13 +197,17 @@ document.getElementById('signupForm').addEventListener('submit', function(e) {
 
 <?php if (!empty($message)): ?>
     Swal.fire({
-        icon: '<?= $statusType ?>',
-        title: '<?= ucfirst($statusType) ?>',
-        text: '<?= $message ?>',
+        icon: <?= json_encode($statusType) ?>,
+        title: <?= json_encode(ucfirst($statusType)) ?>,
+        text: <?= json_encode($message) ?>,
         background: '#1e1b4b',
         color: '#fff',
         confirmButtonColor: '#6366f1'
     });
+<?php endif; ?>
+
+<?php if ($activeTab === 'signup'): ?>
+switchTab('signup');
 <?php endif; ?>
 </script>
 
